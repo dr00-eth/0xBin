@@ -40,6 +40,7 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
 
     mapping(uint256 => Paste) public pastes;
     mapping(address => uint256[]) public userPastes;
+    mapping(address => uint256[]) private accessiblePastes;
     mapping(uint256 => uint256) public nonPrivatePasteIndex;
     uint256[] public nonPrivatePasteIds;
 
@@ -132,6 +133,8 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
         newPaste.allowedAddresses[msg.sender] = true;
 
         userPastes[msg.sender].push(newPasteId);
+        
+        accessiblePastes[msg.sender].push(newPasteId);
 
         emit PasteCreated(newPasteId, msg.sender, _title, _pasteType);
         return newPasteId;
@@ -148,6 +151,8 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
             payable(paste.creator).transfer(msg.value);
             emit PaymentReceived(_pasteId, msg.sender, msg.value);
             emit AllowedAddressAdded(_pasteId, msg.sender);
+            
+            accessiblePastes[msg.sender].push(_pasteId);
         } else if (paste.pasteType == PasteType.Private) {
             require(paste.allowedAddresses[msg.sender], "You do not have access to this paste");
         }
@@ -312,6 +317,9 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
         require(paste.pasteType == PasteType.Private, "Can only add allowed addresses to private pastes");
 
         paste.allowedAddresses[_newAddress] = true;
+        
+        accessiblePastes[_newAddress].push(_pasteId);
+        
         emit AllowedAddressAdded(_pasteId, _newAddress);
     }
 
@@ -322,7 +330,21 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
         require(paste.pasteType == PasteType.Private, "Can only remove allowed addresses from private pastes");
 
         paste.allowedAddresses[_addressToRemove] = false;
+        
+        _removeFromAccessiblePastes(_addressToRemove, _pasteId);
+        
         emit AllowedAddressRemoved(_pasteId, _addressToRemove);
+    }
+
+    function _removeFromAccessiblePastes(address _user, uint256 _pasteId) private {
+        uint256[] storage userAccessiblePastes = accessiblePastes[_user];
+        for (uint i = 0; i < userAccessiblePastes.length; i++) {
+            if (userAccessiblePastes[i] == _pasteId) {
+                userAccessiblePastes[i] = userAccessiblePastes[userAccessiblePastes.length - 1];
+                userAccessiblePastes.pop();
+                break;
+            }
+        }
     }
 
     function getPublicPastes(uint256 _offset, uint256 _limit) external view returns (PasteInfo[] memory) {
@@ -356,6 +378,37 @@ contract ZeroxBin is Ownable, ReentrancyGuard {
 
     function getUserPastes(address _user) external view returns (uint256[] memory) {
         return userPastes[_user];
+    }
+
+    function getAccessiblePastes(address _user) external view returns (PasteInfo[] memory) {
+        uint256[] memory userAccessiblePasteIds = accessiblePastes[_user];
+        PasteInfo[] memory result = new PasteInfo[](userAccessiblePasteIds.length);
+        uint256 validPastesCount = 0;
+
+        for (uint256 i = 0; i < userAccessiblePasteIds.length; i++) {
+            Paste storage paste = pastes[userAccessiblePasteIds[i]];
+            if (!paste.isDeleted && (paste.expirationTime == 0 || block.timestamp <= paste.expirationTime)) {
+                result[validPastesCount] = PasteInfo(
+                    paste.id,
+                    paste.creator,
+                    paste.title,
+                    paste.creationTime,
+                    paste.expirationTime,
+                    paste.pasteType,
+                    paste.price,
+                    paste.isDeleted,
+                    paste.publicKey
+                );
+                validPastesCount++;
+            }
+        }
+
+        // Resize the array to remove any empty slots
+        assembly {
+            mstore(result, validPastesCount)
+        }
+
+        return result;
     }
 
     function setDevAddress(address _newDevAddress) external onlyOwner {
